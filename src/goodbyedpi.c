@@ -20,6 +20,7 @@
 #include "ttltrack.h"
 #include "blackwhitelist.h"
 #include "fakepackets.h"
+#include "doh.h"
 
 // My mingw installation does not load inet_pton definition for some reason
 WINSOCK_API_LINKAGE INT WSAAPI inet_pton(INT Family, LPCSTR pStringBuf, PVOID pAddr);
@@ -28,7 +29,7 @@ WINSOCK_API_LINKAGE INT WSAAPI inet_pton(INT Family, LPCSTR pStringBuf, PVOID pA
 
 #define die() do { sleep(20); exit(EXIT_FAILURE); } while (0)
 
-#define MAX_FILTERS 4
+#define MAX_FILTERS 5
 
 #define DIVERT_NO_LOCALNETSv4_DST "(" \
                    "(ip.DstAddr < 127.0.0.1 or ip.DstAddr > 127.255.255.255) and " \
@@ -145,7 +146,8 @@ enum ERROR_CODE{
     ERROR_BLACKLIST_LOAD,
     ERROR_AUTOTTL,
     ERROR_ATOUSI,
-    ERROR_AUTOB
+    ERROR_AUTOB,
+    ERROR_DOH
 };
 
 static int running_from_service = 0;
@@ -176,6 +178,8 @@ static struct option long_options[] = {
     {"dnsv6-addr",  required_argument, 0,  '!' },
     {"dnsv6-port",  required_argument, 0,  '@' },
     {"dns-verb",    no_argument,       0,  'v' },
+    {"doh",         optional_argument, 0,  '#' },
+    {"no-doh",      no_argument,       0,  '&' },
     {"blacklist",   required_argument, 0,  'b' },
     {"allow-no-sni",no_argument,       0,  ']' },
     {"frag-by-sni", no_argument,       0,  '>' },
@@ -617,7 +621,10 @@ int main(int argc, char *argv[]) {
         do_auto_ttl = 0,
         do_wrong_chksum = 0,
         do_wrong_seq = 0,
-        do_native_frag = 0, do_reverse_frag = 0;
+        do_native_frag = 0, do_reverse_frag = 0,
+        do_doh = 0;
+    char *doh_providers = NULL;
+    HANDLE doh_filter = NULL;
     unsigned int http_fragment_size = 0;
     unsigned int https_fragment_size = 0;
     unsigned int current_fragment_size = 0;
@@ -643,6 +650,9 @@ int main(int argc, char *argv[]) {
     // Make sure to search DLLs only in safe path, not in current working dir.
     SetDllDirectory("");
     SetSearchPathMode(BASE_SEARCH_PATH_ENABLE_SAFE_SEARCHMODE | BASE_SEARCH_PATH_PERMANENT);
+
+    // Unbuffered output: messages must reach a log file or service console at once.
+    setvbuf(stdout, NULL, _IONBF, 0);
 
     if (!running_from_service) {
         running_from_service = 1;
@@ -684,6 +694,8 @@ int main(int argc, char *argv[]) {
         do_wrong_seq = 1;
         do_block_quic = 1;
         max_payload_size = 1200;
+        /* plain DNS is poisoned in many countries: resolve it over HTTPS */
+        do_doh = 1;
     }
 
     while ((opt = getopt_long(argc, argv, "123456789pqrsaf:e:mwk:n", long_options, NULL)) != -1) {
@@ -861,6 +873,18 @@ int main(int argc, char *argv[]) {
                 do_dns_verb = 1;
                 do_tcp_verb = 1;
                 break;
+            case '#': // --doh
+                do_doh = 1;
+                if (!optarg && argv[optind] && argv[optind][0] != '-')
+                    optarg = argv[optind];
+                if (optarg) {
+                    free(doh_providers);
+                    doh_providers = strdup(optarg);
+                }
+                break;
+            case '&': // --no-doh
+                do_doh = 0;
+                break;
             case 'b': // --blacklist
                 do_blacklist = 1;
                 if (!blackwhitelist_load_list(optarg)) {
@@ -990,7 +1014,15 @@ int main(int argc, char *argv[]) {
                 " --dns-port    <value>    redirect UDPv4 DNS requests to the supplied port (53 by default)\n"
                 " --dnsv6-addr  <value>    redirect UDPv6 DNS requests to the supplied IPv6 address (experimental)\n"
                 " --dnsv6-port  <value>    redirect UDPv6 DNS requests to the supplied port (53 by default)\n"
-                " --dns-verb               print verbose DNS redirection messages\n"
+                " --dns-verb               print verbose DNS redirection / DNS-over-HTTPS messages\n"
+                " --doh         [list]     resolve every DNS query over HTTPS (built in, nothing to install).\n"
+                "                          list: comma separated provider names or https:// URLs,\n"
+                "                          tried in order with automatic failover.\n"
+                "                          Providers: cloudflare, google, quad9, adguard.\n"
+                "                          Default (if set): --doh cloudflare,google\n"
+                "                          Local names (.local, .lan, single label, LAN reverse lookups)\n"
+                "                          stay on the system DNS server. Enabled when run without options.\n"
+                " --no-doh                 disable DNS-over-HTTPS.\n"
                 " --blacklist   <txtfile>  perform circumvention tricks only to host names and subdomains from\n"
                 "                          supplied text file (HTTP Host/TLS SNI).\n"
                 "                          This option can be supplied multiple times.\n"
@@ -1051,6 +1083,12 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    if (do_doh && (do_dnsv4_redirect || do_dnsv6_redirect)) {
+        puts("--doh can't be combined with --dns-addr / --dnsv6-addr:\n"
+             "DNS-over-HTTPS already replaces the DNS server.");
+        exit(ERROR_DOH);
+    }
+
     if (!http_fragment_size)
         http_fragment_size = 2;
     if (!https_fragment_size)
@@ -1082,6 +1120,7 @@ int main(int argc, char *argv[]) {
            "HTTP Persistent Nowait: %d\n"           /* 13 */
            "DNS redirect: %d\n"                     /* 14 */
            "DNSv6 redirect: %d\n"                   /* 15 */
+           "DNS-over-HTTPS: %s\n"                   /* 15b */
            "Allow missing SNI: %d\n"                /* 16 */
            "Fake requests, TTL: %s (fixed: %hu, auto: %hu-%hu-%hu, min distance: %hu)\n"  /* 17 */
            "Fake requests, wrong checksum: %d\n"    /* 18 */
@@ -1104,6 +1143,7 @@ int main(int argc, char *argv[]) {
            do_fragment_http_persistent_nowait, /* 13 */
            do_dnsv4_redirect,                  /* 14 */
            do_dnsv6_redirect,                  /* 15 */
+           do_doh ? (doh_providers ? doh_providers : DOH_DEFAULT_PROVIDERS) : "0", /* 15b */
            do_allow_no_sni,                    /* 16 */
            do_auto_ttl ? "auto" : (do_fake_packet ? "fixed" : "disabled"),  /* 17 */
                ttl_of_fake_packet, do_auto_ttl ? auto_ttl_1 : 0, do_auto_ttl ? auto_ttl_2 : 0,
@@ -1132,6 +1172,23 @@ int main(int argc, char *argv[]) {
     finalize_filter_strings();
     puts("\nOpening filter");
     filter_num = 0;
+
+    /*
+     * Start DNS-over-HTTPS before the main filter: its startup check opens
+     * HTTPS connections, and the main filter would hold those packets until
+     * the packet loop below starts reading them.
+     */
+    if (do_doh) {
+        int doh_state = doh_start(doh_providers, do_dns_verb, &doh_filter);
+        if (doh_state < 0)
+            die();
+        if (doh_state > 0) {
+            filters[filter_num++] = doh_filter;
+            /* drop answers cached before, they may be poisoned */
+            flush_dns_cache();
+            printf("DNS-over-HTTPS resolver is running.\n");
+        }
+    }
 
     if (do_passivedpi) {
         /* IPv4 only filter for inbound RST packets with ID [0x0; 0xF] */
