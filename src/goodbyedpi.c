@@ -31,6 +31,10 @@ WINSOCK_API_LINKAGE INT WSAAPI inet_pton(INT Family, LPCSTR pStringBuf, PVOID pA
 
 #define MAX_FILTERS 5
 
+/* Split point used by --frag-by-sni when the SNI is not in the segment: inside the
+ * ClientHello random, past the TLS record and handshake headers. */
+#define TLS_SAFE_SPLIT 20
+
 #define DIVERT_NO_LOCALNETSv4_DST "(" \
                    "(ip.DstAddr < 127.0.0.1 or ip.DstAddr > 127.255.255.255) and " \
                    "(ip.DstAddr < 10.0.0.0 or ip.DstAddr > 10.255.255.255) and " \
@@ -684,18 +688,26 @@ int main(int argc, char *argv[]) {
     );
 
     if (argc == 1) {
-        /* enable mode -9 by default */
+        /*
+         * Default: -5 -q --frag-by-sni --doh.
+         * Measured on Türk Telekom (2026-11): auto TTL fakes (-5) get through every time,
+         * the wrong checksum / wrong SEQ fakes of -9 only part of the time, and with
+         * --frag-by-sni not at all. QUIC is blocked so browsers use TCP, where the
+         * tricks apply.
+         */
         do_fragment_http = do_fragment_https = 1;
         do_reverse_frag = do_native_frag = 1;
         http_fragment_size = https_fragment_size = 2;
         do_fragment_http_persistent = do_fragment_http_persistent_nowait = 1;
         do_fake_packet = 1;
-        do_wrong_chksum = 1;
-        do_wrong_seq = 1;
+        do_auto_ttl = 1;
         do_block_quic = 1;
         max_payload_size = 1200;
         /* plain DNS is poisoned in many countries: resolve it over HTTPS */
         do_doh = 1;
+        /* split right before the SNI: cutting the TLS record header (at byte 2)
+         * makes strict servers reset the connection */
+        do_fragment_by_sni = 1;
     }
 
     while ((opt = getopt_long(argc, argv, "123456789pqrsaf:e:mwk:n", long_options, NULL)) != -1) {
@@ -1028,6 +1040,8 @@ int main(int argc, char *argv[]) {
                 "                          This option can be supplied multiple times.\n"
                 " --allow-no-sni           perform circumvention if TLS SNI can't be detected with --blacklist enabled.\n"
                 " --frag-by-sni            if SNI is detected in TLS packet, fragment the packet right before SNI value.\n"
+                "                          Without SNI in the packet, never cut the TLS record header (split at 20).\n"
+                "                          Enabled when run without options.\n"
                 " --set-ttl     <value>    activate Fake Request Mode and send it with supplied TTL value.\n"
                 "                          DANGEROUS! May break websites in unexpected ways. Use with care (or --blacklist).\n"
                 " --auto-ttl    [a1-a2-m]  activate Fake Request Mode, automatically detect TTL and decrease\n"
@@ -1076,7 +1090,8 @@ int main(int argc, char *argv[]) {
                 " -6          -f 2 -e 2 --wrong-seq --reverse-frag --max-payload\n"
                 " -7          -f 2 -e 2 --wrong-chksum --reverse-frag --max-payload\n"
                 " -8          -f 2 -e 2 --wrong-seq --wrong-chksum --reverse-frag --max-payload\n"
-                " -9          -f 2 -e 2 --wrong-seq --wrong-chksum --reverse-frag --max-payload -q (this is the default)\n\n"
+                " -9          -f 2 -e 2 --wrong-seq --wrong-chksum --reverse-frag --max-payload -q\n\n"
+                "Default without options: -5 -q --frag-by-sni --doh\n\n"
                 "Note: combination of --wrong-seq and --wrong-chksum generates two different fake packets.\n"
                 );
                 exit(ERROR_DEFAULT);
@@ -1476,6 +1491,15 @@ int main(int argc, char *argv[]) {
                     else if (do_fragment_https && ppTcpHdr->DstPort != htons(80)) {
                         if (do_fragment_by_sni && sni_ok) {
                             current_fragment_size = (void*)host_addr - packet_data;
+                        } else if (do_fragment_by_sni && https_fragment_size < TLS_SAFE_SPLIT &&
+                                   packet_dataLen > TLS_SAFE_SPLIT) {
+                            /*
+                             * SNI is not in this segment: a large ClientHello (post-quantum
+                             * key share) is split by TCP and browsers shuffle extensions.
+                             * Don't cut the 5-byte TLS record header then: strict servers
+                             * (e.g. some Turkish banks) reset such connections.
+                             */
+                            current_fragment_size = TLS_SAFE_SPLIT;
                         } else {
                             current_fragment_size = https_fragment_size;
                         }
