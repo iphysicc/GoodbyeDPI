@@ -1,3 +1,22 @@
+# GoodbyeDPI, Türkiye için kurulumlu sürüm
+
+Bu repo [ValdikSS/GoodbyeDPI](https://github.com/ValdikSS/GoodbyeDPI)'ın çatalıdır. Türkiye'de erişim engeli hem DNS'te hem DPI'da olduğu için GoodbyeDPI'yi tek başına çalıştırmak çoğu zaman yetmiyor. Bu sürüm ikisini birden çözüyor ve kurup tek düğmeyle kullanılacak hâle getiriyor.
+
+**[Son sürümü indir](https://github.com/iphysicc/GoodbyeDPI/releases/latest)**: `GoodbyeDPI-Kurulum.exe` dosyasını çalıştır, açılan panelde **Başlat**'a bas.
+
+Orijinal GoodbyeDPI'ye eklenenler:
+
+- **Şifreli DNS içinde.** Düz DNS sorguları yakalanıp HTTPS üzerinden (Cloudflare, Google, Quad9 ya da AdGuard) çözülüyor. Ayrı bir DNSCrypt ya da DNS programı gerekmiyor, Windows'un DNS ayarına dokunulmuyor. Türk Telekom'da engel sayfasına (195.175.254.2) giden discord.com, roblox.com ve pastebin.com gerçek adreslerine çözülüyor.
+- **Yöntem otomatik seçiliyor.** Hangi DPI hilesinin çalıştığı ISS'ye göre değişiyor. Panel yöntemleri sırayla dener ve DPI ile engellenen 8 adresi (Discord sitesi ve uygulama adresleri, Roblox, Wattpad, Pastebin) açan ilkini seçer. Türk Telekom'da ölçüldü: TTL tabanlı yöntemler (`-5`) 8 adresin 8'ini açtı, sahte paket yöntemleri (`-6` … `-9`) her denemede farklı olarak 3–7'sini.
+- **Ağ değişince yeniden kontrol.** Başka bir Wi-Fi'ya ya da telefonun hotspot'una geçince panel korumayı sessizce test eder, gerekirse yeni yöntem bulur.
+- **Kurulum ve panel.** Türkçe kurulum sihirbazı, Ayarlar > Uygulamalar'dan kaldırma, Windows açılışında başlama, bildirim alanı simgesi (açıkken renkli, kapalıyken gri), güncelleme kontrolü.
+
+Windows "Windows kişisel bilgisayarınızı korudu" uyarısı verirse **Ek bilgi > Yine de çalıştır**'a bas: dosya imzasız olduğu için çıkıyor.
+
+Kaynaktan derlemek için `build.ps1` (MinGW-w64, .NET SDK ve Inno Setup gerekir, ayrıntı aşağıda). Motora eklenen DNS-over-HTTPS'in ayrıntıları aşağıdaki *Built-in DNS over HTTPS* bölümünde.
+
+---
+
 GoodbyeDPI — Deep Packet Inspection circumvention utility
 =========================
 
@@ -111,6 +130,35 @@ If your provider intercepts DNS requests, you may want to use `--dns-addr` optio
 
 Check the .cmd scripts and modify it according to your preference and network conditions.
 
+## Built-in DNS over HTTPS
+
+Where the ISP poisons or intercepts plain DNS (Turkey, for example, answers blocked names with a block page address), GoodbyeDPI can resolve every DNS query over HTTPS by itself. Nothing else has to be installed or configured: it uses WinHTTP, which ships with Windows.
+
+```
+goodbyedpi.exe                                    # default mode -9, DNS over HTTPS on
+goodbyedpi.exe -9 --doh                           # Cloudflare, then Google
+goodbyedpi.exe -9 --doh quad9,adguard             # other providers, in this order
+goodbyedpi.exe -9 --doh https://9.9.9.9/dns-query # any RFC 8484 server
+goodbyedpi.exe -9 --doh --dns-verb                # print every resolved name
+```
+
+How it works:
+
+* Outgoing plain DNS queries (UDP port 53, any server) are captured and sent as RFC 8484 POST requests; the answer is injected back as if the original DNS server sent it. Browsers, games and Windows itself keep using their usual DNS settings.
+* DoH servers are reached by IP address (`https://1.1.1.1/dns-query`): no DNS lookup is needed for the DoH server itself and the TLS handshake carries no SNI to block. A URL with a host name works too; that name is resolved through the other servers in the list.
+* Servers are checked at startup. Working servers are used first, with automatic failover to the next one. If no server is reachable, DNS is left untouched and GoodbyeDPI keeps running.
+* Answers are cached for their TTL (5 minutes at most), and identical queries arriving at the same time share one HTTPS request.
+* Local names stay on the system DNS server: single-label names, `.local`, `.lan`, `.home.arpa`, the adapters' DNS suffixes and reverse lookups of private ranges.
+* If every server fails for a query, that query falls back to plain DNS so the connection never stays without DNS.
+
+`--doh` can't be combined with `--dns-addr`; use `--no-doh` to turn it off in the default mode.
+
+## GoodbyeDPI Panel
+
+`GoodbyeDPI-Kurulum.exe` is the setup (Turkish wizard, Inno Setup): it installs GoodbyeDPI, WinDivert and the panel to `C:\Program Files\GoodbyeDPI`, adds Start menu (and optionally desktop) shortcuts and an entry in Settings > Apps for uninstalling. `GoodbyeDPI-Panel.exe` also works on its own as a portable single file (.NET Framework 4.8, nothing to install) and installs itself on first start.
+
+The panel registers the `GoodbyeDPI` Windows service and turns it on and off. There is no mode to choose: on Start it tries the methods in turn and keeps the first one that opens 8 addresses blocked by DPI in Turkey (Discord site and app endpoints, Roblox, Wattpad, Pastebin); the method is saved and only re-checked on later starts. Measured on Türk Telekom, TTL based methods (`-5`, `-5 --set-ttl 5`) opened 8/8 addresses every time while the fake-packet ones (`-6` … `-9`) opened 3–7 of 8, differently on every try, so the TTL ones are tried first. When the network changes (another Wi-Fi, a hotspot, waking up) the panel quietly re-tests the running method and searches again only if it stopped working. The panel also picks the DNS-over-HTTPS provider, starts protection with Windows (the service) and shows its notification area icon at logon (a scheduled task, since the panel needs administrator rights), checks GitHub for a newer release and uninstalls everything. Closing the window keeps it in the notification area (colored icon: protection on, gray: off); protection keeps running even after Exit. When running as a service, GoodbyeDPI writes its messages to `goodbyedpi.log` next to the executable.
+
 # How does it work
 
 ### Passive DPI
@@ -144,6 +192,8 @@ To build x86 exe run:
 And for x86_64:
 
 `make CPREFIX=x86_64-w64-mingw32- BIT64=1 WINDIVERTHEADERS=/path/to/windivert/include WINDIVERTLIBS=/path/to/windivert/amd64`
+
+On Windows, `build.ps1` does everything: it uses MinGW-w64 from winget (`winget install BrechtSanders.WinLibs.POSIX.UCRT`), downloads and verifies WinDivert, builds and puts `goodbyedpi.exe` with the WinDivert files into `dist\x86_64`.
 
 # How to install as Windows Service
 
