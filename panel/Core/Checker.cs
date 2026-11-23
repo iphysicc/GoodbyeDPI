@@ -23,6 +23,12 @@ namespace GoodbyeDPI.Panel.Core
             "discord.com", "gateway.discord.gg", "cdn.discordapp.com", "discordapp.com",
             "roblox.com", "www.roblox.com", "wattpad.com", "pastebin.com",
         };
+        /// <summary>
+        /// Not blocked, but with servers that reset a connection whose first packet cuts the
+        /// TLS record header (GoodbyeDPI's classic split at byte 2). A method must keep them working.
+        /// </summary>
+        static readonly string[] MustKeepWorking = { "www.isbank.com.tr", "www.turkiye.gov.tr" };
+
         const string ControlSite = "www.cloudflare.com";   // not blocked: tells "no internet" apart
 
         public static int SiteCount => Sites.Length;
@@ -31,7 +37,9 @@ namespace GoodbyeDPI.Panel.Core
         {
             public List<string> Working = new List<string>();
             public List<string> Problems = new List<string>();
-            public bool Ok => Problems.Count == 0;
+            /// <summary>Normal sites the method breaks (connection refused/reset, not a timeout).</summary>
+            public List<string> Broken = new List<string>();
+            public bool Ok => Problems.Count == 0 && Broken.Count == 0;
             public int Score => Working.Count;
         }
 
@@ -39,11 +47,15 @@ namespace GoodbyeDPI.Panel.Core
         {
             var r = new Result();
             var checks = Sites.Select(s => CheckSite(s, timeoutSeconds)).ToArray();
-            foreach (var (site, problem) in await Task.WhenAll(checks))
+            var keep = MustKeepWorking.Select(s => CheckSite(s, timeoutSeconds)).ToArray();
+            foreach (var (site, problem, _) in await Task.WhenAll(checks))
             {
                 if (problem == null) r.Working.Add(site);
                 else r.Problems.Add(problem);
             }
+            // a slow site is not the method's fault; a reset is
+            foreach (var (site, problem, timedOut) in await Task.WhenAll(keep))
+                if (problem != null && !timedOut) r.Broken.Add(site);
             return r;
         }
 
@@ -52,18 +64,18 @@ namespace GoodbyeDPI.Panel.Core
         {
             for (int i = 0; i < 2; i++)
             {
-                var (_, problem) = await CheckSite(ControlSite, 8);
+                var (_, problem, _) = await CheckSite(ControlSite, 8);
                 if (problem == null) return true;
                 await Task.Delay(1000);
             }
             return false;
         }
 
-        static async Task<(string site, string problem)> CheckSite(string site, int timeoutSeconds)
+        static async Task<(string site, string problem, bool timedOut)> CheckSite(string site, int timeoutSeconds)
         {
             IPAddress[] system;
             try { system = await Dns.GetHostAddressesAsync(site); }
-            catch { return (site, $"{site}: DNS cevap vermedi."); }
+            catch { return (site, $"{site}: DNS cevap vermedi.", true); }
 
             using (var handler = new HttpClientHandler { AllowAutoRedirect = false })
             using (var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(timeoutSeconds) })
@@ -73,13 +85,17 @@ namespace GoodbyeDPI.Panel.Core
                 try
                 {
                     using (var resp = await http.GetAsync("https://" + site + "/", HttpCompletionOption.ResponseHeadersRead))
-                        return (site, null);   // any HTTP answer with a valid certificate is the real site
+                        return (site, null, false);   // any HTTP answer with a valid certificate is the real site
+                }
+                catch (TaskCanceledException)
+                {
+                    return (site, $"{site}: cevap gelmedi.", true);   // HttpClient's timeout
                 }
                 catch (Exception)
                 {
                     if (await LooksPoisoned(site, system))
-                        return (site, $"{site}: DNS engel sayfasını gösteriyor ({system[0]}).");
-                    return (site, $"{site}: bağlantı kurulamadı.");
+                        return (site, $"{site}: DNS engel sayfasını gösteriyor ({system[0]}).", false);
+                    return (site, $"{site}: bağlantı kurulamadı.", false);
                 }
             }
         }

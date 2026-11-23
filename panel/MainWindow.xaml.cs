@@ -213,8 +213,13 @@ namespace GoodbyeDPI.Panel
                 return;
             }
             tray.SetProblem("bazı siteler açılmıyor");
-            TestResult.Text = "Hiçbir yöntem Discord ve Roblox'u açamadı. Koruma açık bırakıldı, DNS engeli yine aşılır." +
-                (o.Last != null && o.Last.Problems.Count > 0 ? "\n" + string.Join("\n", o.Last.Problems) : "");
+            var last = o.Last;
+            if (last != null && last.Broken.Count > 0)
+                TestResult.Text = "Engelli siteleri açan yöntemler şu siteleri bozuyor: " + string.Join(", ", last.Broken) +
+                    ". Koruma en az bozan yöntemle açık bırakıldı.";
+            else
+                TestResult.Text = "Hiçbir yöntem Discord ve Roblox'u açamadı. Koruma açık bırakıldı, DNS engeli yine aşılır." +
+                    (last != null && last.Problems.Count > 0 ? "\n" + string.Join("\n", last.Problems) : "");
             TestResult.Visibility = Visibility.Visible;
         }
 

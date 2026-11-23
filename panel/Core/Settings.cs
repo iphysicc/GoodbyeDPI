@@ -13,18 +13,20 @@ namespace GoodbyeDPI.Panel.Core
     public sealed class Settings
     {
         /// <summary>
-        /// Methods the automatic search tries, in this order. On Turkish ISPs the TTL based
-        /// ones are reliable, the fake-packet ones (-6 … -9) get through only part of the time.
+        /// Methods the automatic search tries, in this order. Measured on Türk Telekom
+        /// (2026-11): TTL based fakes get through reliably, the -6 … -9 fakes only part of
+        /// the time. Every method splits right before the SNI (--frag-by-sni): the classic
+        /// split at byte 2 cuts the TLS record header and some banks (İş Bankası) reset it.
         /// </summary>
         public static readonly string[] Candidates =
         {
-            "-5",
-            "-5 --set-ttl 5",
-            "-5 --set-ttl 3 --frag-by-sni",
-            "-8",
-            "-9",
-            "-7",
-            "-6",
+            "-5 --frag-by-sni --set-ttl 3 -q",
+            "-5 --frag-by-sni -q",
+            "-5 --frag-by-sni --set-ttl 5 -q",
+            "-8 --frag-by-sni -q",
+            "-9 --frag-by-sni",
+            "-7 --frag-by-sni -q",
+            "-6 --frag-by-sni -q",
         };
 
         public static readonly Option[] DnsOptions =

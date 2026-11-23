@@ -46,7 +46,9 @@ Write-Host "OK: $dist"
 $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
 if (-not $dotnet -and (Test-Path "$env:ProgramFiles\dotnet\dotnet.exe")) { $dotnet = "$env:ProgramFiles\dotnet\dotnet.exe" }
 if ($dotnet -and (Test-Path "$env:ProgramFiles\dotnet\sdk")) {
-    & $dotnet build (Join-Path $root 'panel\GoodbyeDPI.Panel.csproj') -c Release -nologo -v quiet
+    # --no-incremental: Copy-Item keeps old timestamps, so an incremental build would
+    # miss a new engine in dist\x86_64 and embed the previous one
+    & $dotnet build (Join-Path $root 'panel\GoodbyeDPI.Panel.csproj') -c Release -nologo -v quiet --no-incremental
     if ($LASTEXITCODE) { throw "panel build failed ($LASTEXITCODE)" }
     Copy-Item (Join-Path $root 'panel\bin\Release\net48\GoodbyeDPI-Panel.exe') (Join-Path $root 'dist') -Force
     Write-Host "OK: $(Join-Path $root 'dist\GoodbyeDPI-Panel.exe')"

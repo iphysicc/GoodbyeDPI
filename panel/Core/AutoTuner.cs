@@ -25,8 +25,17 @@ namespace GoodbyeDPI.Panel.Core
         // below this protection is kept on, but the user is told it is unreliable
         static int Usable => (Total * 3 + 3) / 4;
 
-        /// <summary>True when the running method still opens (nearly) every test address.</summary>
-        public static bool IsGood(Checker.Result r) => r.Score >= GoodEnough;
+        /// <summary>
+        /// True when the method opens (nearly) every blocked address and breaks no normal site.
+        /// </summary>
+        public static bool IsGood(Checker.Result r) => r.Score >= GoodEnough && r.Broken.Count == 0;
+
+        /// <summary>Not breaking normal sites comes first, then the number of blocked sites opened.</summary>
+        static bool Better(Checker.Result a, Checker.Result b) =>
+            b == null ||
+            (a.Broken.Count == 0 && b.Broken.Count > 0) ||
+            (a.Broken.Count == b.Broken.Count && a.Score > b.Score) ||
+            (a.Broken.Count > 0 && b.Broken.Count > 0 && a.Broken.Count < b.Broken.Count);
 
         /// <summary>Starts with the saved method and checks it; searches only if it fails.</summary>
         public static async Task<Outcome> StartAndVerify(Settings s, bool autostart, Action<int, int> progress)
@@ -37,7 +46,7 @@ namespace GoodbyeDPI.Panel.Core
                 if (active)
                 {
                     var r = await Checker.Run(8);
-                    if (r.Score >= GoodEnough) return new Outcome { Mode = s.Mode, Last = r };
+                    if (IsGood(r)) return new Outcome { Mode = s.Mode, Last = r };
                 }
             }
             return await Search(s, autostart, progress);
@@ -68,7 +77,7 @@ namespace GoodbyeDPI.Panel.Core
                     throw new InvalidOperationException("GoodbyeDPI başlatılamadı. " + (why ?? "Bilgisayarı yeniden başlatıp tekrar dene."));
                 }
                 var r = await Checker.Run(6);
-                if (bestResult == null || r.Score > bestResult.Score)
+                if (Better(r, bestResult))
                 {
                     best = order[i];
                     bestResult = r;
@@ -76,7 +85,7 @@ namespace GoodbyeDPI.Panel.Core
                 if (r.Ok) break;   // everything opened: no need to try the rest
             }
 
-            bool usable = bestResult.Score >= Usable;
+            bool usable = bestResult.Score >= Usable && bestResult.Broken.Count == 0;
             var chosen = new Settings { Mode = best, Dns = s.Dns };
             if (best != current)   // the service still runs the last method tried
                 await Task.Run(() => Installer.Restart(chosen, autostart));

@@ -75,6 +75,14 @@ namespace GoodbyeDPI.Panel.Core
         {
             Directory.CreateDirectory(Dir);
 
+            // The setup owns the files it installed: an older panel copy must not put back
+            // its own (older) engine. Only the portable panel installs and updates them.
+            if (InstalledBySetup && Payload.All(n => File.Exists(Path.Combine(Dir, n))))
+            {
+                CreateShortcut();
+                return;
+            }
+
             var changed = Payload.Where(n => !SameContent(Path.Combine(Dir, n), ReadPayload(n))).ToList();
             if (changed.Count > 0)
             {
