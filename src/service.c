@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <stdio.h>
+#include <string.h>
 #include "goodbyedpi.h"
 #include "service.h"
 
@@ -69,6 +70,20 @@ void service_main(int argc __attribute__((unused)),
     }
 
     SetServiceStatus(hStatus, &ServiceStatus);
+
+    /*
+     * A service has no console: write messages to goodbyedpi.log next to
+     * the executable, so the reason of a failure can be read afterwards.
+     */
+    {
+        char logpath[MAX_PATH];
+        DWORD n = GetModuleFileNameA(NULL, logpath, MAX_PATH);
+        char *slash = n ? strrchr(logpath, '\\') : NULL;
+        if (slash && (size_t)(slash - logpath) + sizeof("\\goodbyedpi.log") < MAX_PATH) {
+            strcpy(slash, "\\goodbyedpi.log");
+            freopen(logpath, "w", stdout);
+        }
+    }
 
     // Calling main with saved argc & argv
     ServiceStatus.dwWin32ExitCode = (DWORD)main(service_argc, service_argv);
