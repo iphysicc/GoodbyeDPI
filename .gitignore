@@ -1,2 +1,8 @@
 *.o
 *.exe
+
+# local build inputs and outputs (build.ps1)
+deps/
+dist/
+panel/bin/
+panel/obj/

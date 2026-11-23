@@ -1,0 +1,116 @@
+<Window x:Class="GoodbyeDPI.Panel.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="GoodbyeDPI" Width="400" SizeToContent="Height"
+        ResizeMode="CanMinimize" WindowStartupLocation="CenterScreen"
+        WindowStyle="SingleBorderWindow" Background="{StaticResource Bg}" Icon="icon.ico"
+        FontFamily="{StaticResource UiFont}" Foreground="{StaticResource Text}"
+        UseLayoutRounding="True" SnapsToDevicePixels="True">
+
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="36" ResizeBorderThickness="0" GlassFrameThickness="0"
+                      CornerRadius="0" UseAeroCaptionButtons="False" />
+    </WindowChrome.WindowChrome>
+
+    <Grid>
+        <DockPanel>
+            <!-- title bar -->
+            <Grid DockPanel.Dock="Top" Height="36">
+                <TextBlock Text="GoodbyeDPI" Margin="24,0,0,0" VerticalAlignment="Center"
+                           FontSize="12" Foreground="{StaticResource Muted}" />
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Style="{StaticResource CaptionButton}" Content="&#xE921;" ToolTip="Simge durumuna küçült"
+                            WindowChrome.IsHitTestVisibleInChrome="True" Click="Minimize_Click" />
+                    <Button Style="{StaticResource CaptionButton}" Content="&#xE8BB;" ToolTip="Bildirim alanına gizle"
+                            WindowChrome.IsHitTestVisibleInChrome="True" Click="Close_Click" />
+                </StackPanel>
+            </Grid>
+
+            <StackPanel Margin="24,12,24,20">
+                <!-- state -->
+                <TextBlock x:Name="StateTitle" Text="GoodbyeDPI" FontFamily="{StaticResource DisplayFont}"
+                           FontSize="28" FontWeight="Normal" />
+                <TextBlock x:Name="StateLine" Text=" " FontSize="14" Foreground="{StaticResource Muted}"
+                           TextWrapping="Wrap" Margin="0,4,0,0" LineHeight="20" />
+
+                <Button x:Name="MainButton" Style="{StaticResource PrimaryButton}" Margin="0,24,0,0"
+                        Content="Başlat" IsEnabled="False" Click="MainButton_Click" />
+                <TextBlock x:Name="Problem" Foreground="{StaticResource Danger}" FontSize="13"
+                           TextWrapping="Wrap" Margin="0,10,0,0" LineHeight="18" Visibility="Collapsed" />
+
+                <!-- method: found automatically -->
+                <Border Background="{StaticResource Surface}" CornerRadius="6" Margin="0,24,0,0" Padding="16,12">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
+                                <TextBlock Text="Yöntem" FontSize="14" FontWeight="Medium" />
+                                <TextBlock x:Name="ModeLine" Text="Başlatınca otomatik bulunur" FontSize="12"
+                                           Foreground="{StaticResource Muted}" TextWrapping="Wrap" />
+                            </StackPanel>
+                            <Button x:Name="RetuneButton" Grid.Column="1" Style="{StaticResource SmallTonalButton}"
+                                    Content="Yeniden bul" MinWidth="104" VerticalAlignment="Center"
+                                    IsEnabled="False" Click="Retune_Click" />
+                        </Grid>
+                        <TextBlock x:Name="TestResult" Foreground="{StaticResource Danger}" FontSize="13"
+                                   TextWrapping="Wrap" Margin="0,10,0,0" LineHeight="18" Visibility="Collapsed" />
+                    </StackPanel>
+                </Border>
+
+                <!-- settings -->
+                <Border Background="{StaticResource Surface}" CornerRadius="6" Margin="0,8,0,0" Padding="16,4">
+                    <StackPanel>
+                        <Grid Height="48">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
+                                <TextBlock Text="Şifreli DNS" FontSize="14" FontWeight="Medium" />
+                                <TextBlock Text="DoH sağlayıcısı" FontSize="12"
+                                           Foreground="{StaticResource Muted}" />
+                            </StackPanel>
+                            <ComboBox x:Name="DnsBox" Grid.Column="1" Style="{StaticResource Combo}" HorizontalAlignment="Right"
+                                      VerticalAlignment="Center" IsEnabled="False" SelectionChanged="Setting_Changed" />
+                        </Grid>
+                        <Grid Height="48">
+                            <TextBlock Text="Windows açılınca başlat" FontSize="14" FontWeight="Medium"
+                                       VerticalAlignment="Center" />
+                            <CheckBox x:Name="AutoBox" Style="{StaticResource Switch}" HorizontalAlignment="Right"
+                                      VerticalAlignment="Center" IsEnabled="False"
+                                      Checked="Autostart_Changed" Unchecked="Autostart_Changed" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+
+                <!-- footer -->
+                <Grid Margin="0,14,0,0">
+                    <Button x:Name="UninstallButton" Style="{StaticResource TextButton}" Content="Kaldır"
+                            Foreground="{StaticResource Danger}" HorizontalAlignment="Left"
+                            IsEnabled="False" Click="Uninstall_Click" />
+                    <TextBlock x:Name="VersionText" FontSize="12" Foreground="{StaticResource Muted}"
+                               HorizontalAlignment="Right" VerticalAlignment="Center" />
+                    <Button x:Name="UpdateButton" Style="{StaticResource TextButton}" Foreground="{StaticResource Text}"
+                            HorizontalAlignment="Right" Visibility="Collapsed" Click="Update_Click" />
+                </Grid>
+            </StackPanel>
+        </DockPanel>
+
+        <!-- uninstall confirmation -->
+        <Grid x:Name="Overlay" Background="#D90B0A06" Visibility="Collapsed">
+            <Border Background="{StaticResource Surface}" CornerRadius="6" Margin="24" Padding="20"
+                    VerticalAlignment="Center">
+                <StackPanel>
+                    <TextBlock Text="GoodbyeDPI kaldırılsın mı?" FontSize="16" FontWeight="Medium" />
+                    <TextBlock Text="Koruma durdurulur. Program dosyaları, ayarlar ve kısayollar silinir."
+                               FontSize="13" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                               Margin="0,6,0,0" LineHeight="18" />
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+                        <Button Style="{StaticResource SmallTonalButton}" Content="Vazgeç" Click="CancelUninstall_Click"
+                                IsCancel="True" />
+                        <Button x:Name="ConfirmUninstallButton" Style="{StaticResource DangerToneButton}"
+                                Content="Kaldır" Margin="8,0,0,0" MinWidth="80" Click="ConfirmUninstall_Click" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>
