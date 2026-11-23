@@ -8,6 +8,7 @@ Orijinal GoodbyeDPI'ye eklenenler:
 
 - **Şifreli DNS içinde.** Düz DNS sorguları yakalanıp HTTPS üzerinden (Cloudflare, Google, Quad9 ya da AdGuard) çözülüyor. Ayrı bir DNSCrypt ya da DNS programı gerekmiyor, Windows'un DNS ayarına dokunulmuyor. Türk Telekom'da engel sayfasına (195.175.254.2) giden discord.com, roblox.com ve pastebin.com gerçek adreslerine çözülüyor.
 - **Yöntem otomatik seçiliyor.** Hangi DPI hilesinin çalıştığı ISS'ye göre değişiyor. Panel yöntemleri sırayla dener ve DPI ile engellenen 8 adresi (Discord sitesi ve uygulama adresleri, Roblox, Wattpad, Pastebin) açan ilkini seçer. Türk Telekom'da ölçüldü: TTL tabanlı yöntemler (`-5`) 8 adresin 8'ini açtı, sahte paket yöntemleri (`-6` … `-9`) her denemede farklı olarak 3–7'sini.
+- **Bankaları bozmuyor.** Orijinal GoodbyeDPI ilk HTTPS paketini 2. bayttan bölüyor; bu TLS başlığını ortadan kesiyor ve bazı sunucular bağlantıyı sıfırlıyor (`ERR_CONNECTION_RESET`). Ölçüldü: İş Bankası'nın beş adresi (`www`, `gorsel`, `maxiweb`, `appconnect`, `connect-cdn`) `-5`, `-5 --set-ttl 5` ve `-9` ile her denemede kopuyordu. Bu sürüm paketi site adının hemen önünden bölüyor (`--frag-by-sni`); site adı pakette yoksa TLS başlığını hiç kesmiyor. Panel testinde engelli adreslerin yanında İş Bankası ve e-Devlet de var: onları bozan yöntem seçilmiyor.
 - **Ağ değişince yeniden kontrol.** Başka bir Wi-Fi'ya ya da telefonun hotspot'una geçince panel korumayı sessizce test eder, gerekirse yeni yöntem bulur.
 - **Kurulum ve panel.** Türkçe kurulum sihirbazı, Ayarlar > Uygulamalar'dan kaldırma, Windows açılışında başlama, bildirim alanı simgesi (açıkken renkli, kapalıyken gri), güncelleme kontrolü.
 
@@ -135,7 +136,7 @@ Check the .cmd scripts and modify it according to your preference and network co
 Where the ISP poisons or intercepts plain DNS (Turkey, for example, answers blocked names with a block page address), GoodbyeDPI can resolve every DNS query over HTTPS by itself. Nothing else has to be installed or configured: it uses WinHTTP, which ships with Windows.
 
 ```
-goodbyedpi.exe                                    # default mode -9, DNS over HTTPS on
+goodbyedpi.exe                                    # default: -5 -q --frag-by-sni --doh
 goodbyedpi.exe -9 --doh                           # Cloudflare, then Google
 goodbyedpi.exe -9 --doh quad9,adguard             # other providers, in this order
 goodbyedpi.exe -9 --doh https://9.9.9.9/dns-query # any RFC 8484 server
