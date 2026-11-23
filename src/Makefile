@@ -9,8 +9,13 @@ MINGWLIB = /usr/x86_64-w64-mingw32/lib/
 TARGET = goodbyedpi.exe
 # Linking SSP does not work for some reason, the executable doesn't start.
 #LIBS = -L$(WINDIVERTLIBS) -Wl,-Bstatic -lssp -Wl,-Bdynamic -lWinDivert -lws2_32
-LIBS = -L$(WINDIVERTLIBS) -lWinDivert -lws2_32 -lwinhttp -liphlpapi -l:libssp.a
+LIBS = -L$(WINDIVERTLIBS) -lWinDivert -lws2_32 -lwinhttp -liphlpapi
 CC = $(CPREFIX)gcc
+# Newer MinGW-w64 has the stack protector in its own runtime and no libssp.a:
+# link it only when the toolchain still ships it.
+ifneq ($(shell $(CC) -print-file-name=libssp.a),libssp.a)
+	LIBS += -l:libssp.a
+endif
 
 CCWINDRES = $(CPREFIX)windres
 ifeq (, $(shell which $(CPREFIX)windres))
