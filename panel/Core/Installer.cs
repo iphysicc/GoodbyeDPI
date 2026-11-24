@@ -157,13 +157,13 @@ namespace GoodbyeDPI.Panel.Core
 
         // ---------- service ----------
 
-        static ServiceController Find() =>
-            ServiceController.GetServices().FirstOrDefault(
-                s => string.Equals(s.ServiceName, ServiceName, StringComparison.OrdinalIgnoreCase));
-
         public static ServiceControllerStatus? Status()
         {
-            using (var s = Find()) return s?.Status;
+            using (var s = new ServiceController(ServiceName))
+            {
+                try { return s.Status; }
+                catch (InvalidOperationException) { return null; }
+            }
         }
 
         public static bool IsRunning()
@@ -174,7 +174,11 @@ namespace GoodbyeDPI.Panel.Core
 
         public static bool Autostart()
         {
-            using (var s = Find()) return s != null && s.StartType == ServiceStartMode.Automatic;
+            using (var s = new ServiceController(ServiceName))
+            {
+                try { return s.StartType == ServiceStartMode.Automatic; }
+                catch (InvalidOperationException) { return false; }
+            }
         }
 
         /// <summary>Creates the service or updates its command line and start type.</summary>
@@ -182,7 +186,7 @@ namespace GoodbyeDPI.Panel.Core
         {
             string bin = "\"\\\"" + EngineExe + "\\\" " + s.Arguments + "\"";
             string start = autostart ? "auto" : "demand";
-            int rc = Find() == null
+            int rc = Status() == null
                 ? Sc($"create {ServiceName} binPath= {bin} start= {start} DisplayName= \"GoodbyeDPI\"")
                 : Sc($"config {ServiceName} binPath= {bin} start= {start}");
             if (rc != 0)
@@ -194,11 +198,13 @@ namespace GoodbyeDPI.Panel.Core
 
         public static void Start()
         {
-            using (var s = Find())
+            using (var s = new ServiceController(ServiceName))
             {
-                if (s == null) throw new InvalidOperationException("Servis kurulu değil.");
-                if (s.Status == ServiceControllerStatus.Running) return;
-                if (s.Status == ServiceControllerStatus.StopPending)
+                ServiceControllerStatus st;
+                try { st = s.Status; }
+                catch (InvalidOperationException) { throw new InvalidOperationException("Servis kurulu değil."); }
+                if (st == ServiceControllerStatus.Running) return;
+                if (st == ServiceControllerStatus.StopPending)
                     s.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(15));
                 s.Start();
                 s.WaitForStatus(ServiceControllerStatus.Running, TimeSpan.FromSeconds(15));
@@ -207,10 +213,13 @@ namespace GoodbyeDPI.Panel.Core
 
         public static void Stop()
         {
-            using (var s = Find())
+            using (var s = new ServiceController(ServiceName))
             {
-                if (s == null || s.Status == ServiceControllerStatus.Stopped) return;
-                if (s.Status != ServiceControllerStatus.StopPending) s.Stop();
+                ServiceControllerStatus st;
+                try { st = s.Status; }
+                catch (InvalidOperationException) { return; }
+                if (st == ServiceControllerStatus.Stopped) return;
+                if (st != ServiceControllerStatus.StopPending) s.Stop();
                 s.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(20));
             }
             FlushDns();
@@ -280,6 +289,7 @@ namespace GoodbyeDPI.Panel.Core
 
         static string ErrorLine(string output)
         {
+            if (string.IsNullOrEmpty(output)) return null;
             var lines = output.Replace("\r", "").Split('\n')
                 .Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
             int i = lines.FindIndex(l => l.StartsWith("Error", StringComparison.OrdinalIgnoreCase) ||

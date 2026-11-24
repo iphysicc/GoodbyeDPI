@@ -53,8 +53,10 @@
 
 #define DOH_MAX_PROVIDERS   16
 #define DOH_MAX_SUFFIXES    32
+#define DOH_SUFFIX_TTL_MS   300000  /* refresh DHCP suffixes every 5 minutes */
+#define DOH_MAX_UDP_PAYLOAD 1400    /* truncate with TC above safe UDP MTU */
 #define DOH_MAX_ANSWER      65000   /* one UDP datagram incl. IPv6+UDP headers */
-#define DOH_TEST_TIMEOUT_MS 10000 /* longer than the WinHTTP timeouts below */
+#define DOH_TEST_TIMEOUT_MS 12000 /* longer than the WinHTTP timeouts below */
 #define DOH_FILTER "outbound and !loopback and !impostor and " \
                    "udp and udp.DstPort == 53 and udp.PayloadLength >= 17"
 
@@ -88,6 +90,8 @@ static volatile LONG preferred = 0;   /* index of the last provider that answere
 
 static char local_suffixes[DOH_MAX_SUFFIXES][256];
 static int local_suffix_num = 0;
+static ULONGLONG local_suffix_loaded = 0;
+static SRWLOCK suffix_lock = SRWLOCK_INIT;
 
 static HINTERNET session = NULL;
 static HANDLE divert = NULL;
@@ -247,7 +251,7 @@ static void add_local_suffix(const char *suffix) {
     snprintf(local_suffixes[local_suffix_num++], 256, "%s", s);
 }
 
-static void load_local_suffixes(void) {
+static void load_local_suffixes_locked(void) {
     static const char *defaults[] = {
         "local", "lan", "home", "home.arpa", "internal", "intranet",
         "localdomain", "localhost", "corp", "private",
@@ -257,6 +261,7 @@ static void load_local_suffixes(void) {
     FIXED_INFO *fi;
     size_t i;
 
+    local_suffix_num = 0;
     for (i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++)
         add_local_suffix(defaults[i]);
 
@@ -292,6 +297,13 @@ static void load_local_suffixes(void) {
             add_local_suffix(buf);
     }
     free(aa);
+    local_suffix_loaded = GetTickCount64();
+}
+
+static void load_local_suffixes(void) {
+    AcquireSRWLockExclusive(&suffix_lock);
+    load_local_suffixes_locked();
+    ReleaseSRWLockExclusive(&suffix_lock);
 }
 
 /* ---------- DNS message helpers ---------- */
@@ -361,9 +373,23 @@ static int name_is_local(const char *name) {
     for (i = 0; i < sizeof(ip6_private) / sizeof(ip6_private[0]); i++)
         if (ends_with_label(name, ip6_private[i]))
             return 1;
-    for (i = 0; i < (size_t)local_suffix_num; i++)
-        if (ends_with_label(name, local_suffixes[i]))
+
+    /* Refresh DHCP DNS suffixes periodically so network switches are picked up. */
+    if (GetTickCount64() - local_suffix_loaded >= DOH_SUFFIX_TTL_MS) {
+        AcquireSRWLockExclusive(&suffix_lock);
+        if (GetTickCount64() - local_suffix_loaded >= DOH_SUFFIX_TTL_MS)
+            load_local_suffixes_locked();
+        ReleaseSRWLockExclusive(&suffix_lock);
+    }
+
+    AcquireSRWLockShared(&suffix_lock);
+    for (i = 0; i < (size_t)local_suffix_num; i++) {
+        if (ends_with_label(name, local_suffixes[i])) {
+            ReleaseSRWLockShared(&suffix_lock);
             return 1;
+        }
+    }
+    ReleaseSRWLockShared(&suffix_lock);
     return 0;
 }
 
@@ -394,6 +420,7 @@ typedef struct doh_cache_entry {
     struct doh_cache_entry *next;
     doh_key_t key;
     int pending;
+    ULONGLONG stored;
     ULONGLONG expires;
     DWORD alen;
     char *answer;
@@ -500,11 +527,46 @@ static void cache_purge(ULONGLONG now) {
     }
 }
 
+/* Decrements RR TTLs in a cached answer by elapsed seconds (skipping OPT). */
+static void answer_age_ttl(unsigned char *a, DWORD alen, DWORD elapsed) {
+    UINT pos = 12;
+    unsigned int qd, rr;
+
+    if (elapsed == 0 || alen < 12)
+        return;
+    qd = (a[4] << 8) | a[5];
+    rr = (unsigned int)(((a[6] << 8) | a[7]) + ((a[8] << 8) | a[9]) + ((a[10] << 8) | a[11]));
+    while (qd--)
+        if (!dns_skip_name(a, alen, &pos) || (pos += 4) > alen)
+            return;
+    while (rr--) {
+        unsigned int rtype, rdlen;
+        DWORD t;
+        if (!dns_skip_name(a, alen, &pos) || pos + 10 > alen)
+            return;
+        rtype = (a[pos] << 8) | a[pos + 1];
+        if (rtype != 41) {           /* OPT pseudo-RR stores flags in TTL */
+            t = ((DWORD)a[pos + 4] << 24) | ((DWORD)a[pos + 5] << 16) |
+                ((DWORD)a[pos + 6] << 8) | a[pos + 7];
+            t = (t > elapsed) ? (t - elapsed) : 1;
+            a[pos + 4] = (unsigned char)(t >> 24);
+            a[pos + 5] = (unsigned char)(t >> 16);
+            a[pos + 6] = (unsigned char)(t >> 8);
+            a[pos + 7] = (unsigned char)(t);
+        }
+        rdlen = (a[pos + 8] << 8) | a[pos + 9];
+        pos += 10 + rdlen;
+        if (pos > alen)
+            return;
+    }
+}
+
 /* Returns 1 with a cached answer copied into answer (ID and question taken
  * from the query). Returns 0 when the caller has to resolve it. */
 static int cache_get(const doh_key_t *k, const char *query, char *answer, DWORD *alen) {
     doh_cache_entry_t **e;
     ULONGLONG now, deadline = GetTickCount64() + DOH_CACHE_WAIT_MS;
+    DWORD elapsed = 0;
     int hit = 0;
 
     AcquireSRWLockExclusive(&cache_lock);
@@ -519,6 +581,7 @@ static int cache_get(const doh_key_t *k, const char *query, char *answer, DWORD 
         if ((*e)->expires > now) {
             memcpy(answer, (*e)->answer, (*e)->alen);
             *alen = (*e)->alen;
+            elapsed = (DWORD)((now - (*e)->stored) / 1000);
             hit = 1;
         }
         else {
@@ -544,6 +607,7 @@ static int cache_get(const doh_key_t *k, const char *query, char *answer, DWORD 
         memcpy(answer, query, 2);                 /* this query's ID */
         if (*alen >= 12 + k->qsection)            /* and its exact name case */
             memcpy(answer + 12, query + 12, k->qsection);
+        answer_age_ttl((unsigned char *)answer, *alen, elapsed);
     }
     return hit;
 }
@@ -557,11 +621,13 @@ static void cache_put(const doh_key_t *k, const char *answer, DWORD alen) {
     AcquireSRWLockExclusive(&cache_lock);
     e = cache_find(k);
     if (copy && *e) {
+        ULONGLONG now = GetTickCount64();
         memcpy(copy, answer, alen);
         free((*e)->answer);
         (*e)->answer = copy;
         (*e)->alen = alen;
-        (*e)->expires = GetTickCount64() + (ULONGLONG)ttl * 1000;
+        (*e)->stored = now;
+        (*e)->expires = now + (ULONGLONG)ttl * 1000;
         (*e)->pending = 0;
         copy = NULL;
     }
@@ -655,10 +721,33 @@ static void inject_answer(doh_job_t *job, PWINDIVERT_IPHDR ip, PWINDIVERT_IPV6HD
                           PWINDIVERT_UDPHDR udp, const char *answer, DWORD alen)
 {
     char *pkt;
+    char trunc[512];
     UINT hdr = ip ? sizeof(WINDIVERT_IPHDR) : sizeof(WINDIVERT_IPV6HDR);
-    UINT total = hdr + (UINT)sizeof(WINDIVERT_UDPHDR) + alen;
+    UINT total;
     WINDIVERT_ADDRESS addr = job->addr;
     PWINDIVERT_UDPHDR rudp;
+
+    /* Above a safe UDP MTU we don't fragment IP packets: return a truncated
+     * response (TC=1) so the client retries cleanly over TCP. */
+    if (alen > DOH_MAX_UDP_PAYLOAD && alen >= 12) {
+        UINT pos = 12;
+        DWORD tlen = 12;
+        if ((((unsigned char)answer[4] << 8) | (unsigned char)answer[5]) == 1 &&
+            dns_skip_name((const unsigned char *)answer, alen, &pos) &&
+            pos + 4 <= alen && pos + 4 <= sizeof(trunc))
+        {
+            tlen = pos + 4;
+        }
+        memcpy(trunc, answer, tlen);
+        trunc[2] |= 0x02;            /* TC (Truncated) */
+        memset(trunc + 6, 0, 6);     /* ANCOUNT = NSCOUNT = ARCOUNT = 0 */
+        if (tlen == 12)
+            memset(trunc + 4, 0, 2); /* QDCOUNT = 0 when question didn't fit */
+        answer = trunc;
+        alen = tlen;
+    }
+
+    total = hdr + (UINT)sizeof(WINDIVERT_UDPHDR) + alen;
 
     pkt = calloc(1, total);
     if (!pkt)
@@ -825,39 +914,70 @@ static DWORD build_query(const char *name, unsigned char *buf, size_t cap) {
     return (DWORD)pos;
 }
 
+/* Ref-counted per-thread job so a timed-out test thread can never race with
+ * providers[] reordering or use freed memory. */
+typedef struct {
+    doh_provider_t provider;
+    int index;
+    volatile LONG ref;
+    volatile LONG ok;
+    volatile LONG test_ms;
+} doh_test_job_t;
+
 static DWORD WINAPI doh_test_thread(LPVOID arg) {
-    doh_provider_t *p = arg;
+    doh_test_job_t *job = arg;
     unsigned char q[64];
     char *a = malloc(DOH_MAX_ANSWER);
     DWORD qlen = build_query("example.com", q, sizeof(q)), alen = 0;
     ULONGLONG t0 = GetTickCount64();
 
-    if (a && doh_exchange(p, (char *)q, qlen, a, DOH_MAX_ANSWER, &alen) &&
+    if (a && doh_exchange(&job->provider, (char *)q, qlen, a, DOH_MAX_ANSWER, &alen) &&
         (a[3] & 0x0F) == 0)          /* RCODE NOERROR */
     {
-        InterlockedExchange(&p->test_ms, (LONG)(GetTickCount64() - t0));
-        InterlockedExchange(&p->ok, 1);
+        InterlockedExchange(&job->test_ms, (LONG)(GetTickCount64() - t0));
+        InterlockedExchange(&job->ok, 1);
     }
     free(a);
+    if (InterlockedDecrement(&job->ref) == 0)
+        free(job);
     return 0;
 }
 
 static int self_test(void) {
     HANDLE threads[DOH_MAX_PROVIDERS];
+    doh_test_job_t *jobs[DOH_MAX_PROVIDERS];
     doh_provider_t sorted[DOH_MAX_PROVIDERS];
     int n = 0, working = 0, i;
 
     for (i = 0; i < provider_num; i++) {
+        doh_test_job_t *job;
         if (!providers[i].host_is_ip)
             continue;                /* needs DNS, tested implicitly later */
-        threads[n] = CreateThread(NULL, 0, doh_test_thread, &providers[i], 0, NULL);
-        if (threads[n])
+        job = calloc(1, sizeof(*job));
+        if (!job)
+            continue;
+        job->provider = providers[i];
+        job->index = i;
+        job->ref = 2;
+        threads[n] = CreateThread(NULL, 0, doh_test_thread, job, 0, NULL);
+        if (threads[n]) {
+            jobs[n] = job;
             n++;
+        } else {
+            free(job);
+        }
     }
     if (n)
         WaitForMultipleObjects((DWORD)n, threads, TRUE, DOH_TEST_TIMEOUT_MS);
-    for (i = 0; i < n; i++)
+    for (i = 0; i < n; i++) {
         CloseHandle(threads[i]);
+        if (InterlockedCompareExchange(&jobs[i]->ok, 0, 0)) {
+            providers[jobs[i]->index].ok = 1;
+            providers[jobs[i]->index].test_ms = InterlockedCompareExchange(&jobs[i]->test_ms, 0, 0);
+        }
+        if (InterlockedDecrement(&jobs[i]->ref) == 0)
+            free(jobs[i]);
+    }
 
     /* Working servers first, keep the user's order otherwise. */
     for (i = 0; i < provider_num; i++)

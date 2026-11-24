@@ -1,6 +1,6 @@
 **GoodbyeDPI-Kurulum.exe** dosyasını indirip çalıştır, kurulum bitince açılan panelde **Başlat**'a bas.
 
-**1.1.0'da yeni:** İş Bankası gibi bazı sitelerde çıkan `ERR_CONNECTION_RESET` düzeldi. GoodbyeDPI paketi 2. bayttan bölüyordu, bu TLS başlığını kesiyor ve bazı sunucular bağlantıyı sıfırlıyordu; artık site adının hemen önünden bölüyor. Panel yöntem ararken bankaları ve e-Devlet'i de test ediyor, onları bozan yöntemi seçmiyor. 1.0.0'dan güncelleyenlerde panel eski yöntemi bırakıp yenisini kendisi bulur.
+**1.1.1'de yeni:** Güncelleme doğrulama (SHA-256) ve güvenlik sertleştirmeleri eklendi; güncelleme sırasında koruma açıksa kurulum sonrasında kendiliğinden devam ediyor. Arka plandaki kaynak kullanımı azaltıldı, yöntem araması iptal edilebilir hâle getirildi ve bildirim alanı menüsüne **Günlüğü aç** eklendi. DoH motorunda önbellek TTL yaşlandırma, büyük DNS cevaplarında UDP kesme (`TC`) ve ağ değişiminde yerel DNS soneklerini yenileme eklendi.
 
 - Şifreli DNS (DNS-over-HTTPS) içinde: ayrı bir DNSCrypt ya da DNS programı gerekmez.
 - Yöntem otomatik bulunur: panel yöntemleri sırayla dener, Discord ve Roblox'u açanı seçer.

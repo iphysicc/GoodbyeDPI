@@ -1,7 +1,10 @@
 using System;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.ServiceProcess;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -25,6 +28,7 @@ namespace GoodbyeDPI.Panel
         readonly DispatcherTimer updateTimer = new DispatcherTimer { Interval = TimeSpan.FromHours(12) };
         DateTime lastBackgroundCheck = DateTime.MinValue;
         Updater.Release update;
+        CancellationTokenSource searchCts;
 
         public MainWindow()
         {
@@ -45,9 +49,23 @@ namespace GoodbyeDPI.Panel
 
             // X keeps the panel in the notification area; Çıkış in its menu closes it
             Closing += (s, e) => { if (!exiting) { e.Cancel = true; Hide(); } };
+            IsVisibleChanged += (s, e) => timer.Interval = IsVisible ? TimeSpan.FromSeconds(1.5) : TimeSpan.FromSeconds(8);
             tray.OpenRequested += ShowFromTray;
             tray.ToggleRequested += () => MainButton_Click(null, null);
+            tray.OpenLogRequested += OpenLog;
             tray.ExitRequested += ExitApp;
+        }
+
+        void OpenLog()
+        {
+            if (File.Exists(Installer.LogFile))
+            {
+                try { Process.Start(new ProcessStartInfo("notepad.exe", $"\"{Installer.LogFile}\"") { UseShellExecute = true }); }
+                catch { }
+                return;
+            }
+            ShowFromTray();
+            ShowProblem("Henüz günlük dosyası oluşmamış. Korumayı bir kez başlattıktan sonra burada görünür.");
         }
 
         public void ShowFromTray()
@@ -127,8 +145,10 @@ namespace GoodbyeDPI.Panel
             lastBackgroundCheck = DateTime.Now;
 
             var r = await Checker.Run(6);
-            if (busy || AutoTuner.IsGood(r)) { tray.SetProblem(null); return; }
+            if (busy || !Installer.IsRunning()) return;
+            if (AutoTuner.IsGood(r)) { tray.SetProblem(null); return; }
             if (!await Checker.InternetWorks()) return;   // offline: the next network change retries
+            if (busy || !Installer.IsRunning()) return;
 
             await Connect(search: true);
             Refresh();
@@ -227,6 +247,12 @@ namespace GoodbyeDPI.Panel
 
         async void MainButton_Click(object sender, RoutedEventArgs e)
         {
+            if (searchCts != null)
+            {
+                searchCts.Cancel();
+                MainButton.IsEnabled = false;
+                return;
+            }
             if (busy) return;
             HideProblem();
             HideTestResult();
@@ -255,17 +281,31 @@ namespace GoodbyeDPI.Panel
         async Task Connect(bool search)
         {
             bool auto = AutoBox.IsChecked == true;
+            bool wasRunning = Installer.IsRunning();
             var s = settings;
             userStopped = true;
             ShowSearching();
             AutoTuner.Outcome outcome = null;
-            bool ok = await RunBusy(search ? RetuneButton : MainButton, async () =>
+            bool cancelled = false;
+            var cts = new CancellationTokenSource();
+            searchCts = cts;
+            bool ok = await RunBusy(search ? RetuneButton : null, async () =>
             {
-                outcome = search
-                    ? await AutoTuner.Search(s, auto, Progress)
-                    : await AutoTuner.StartAndVerify(s, auto, Progress);
-            });
-            if (ok && outcome != null)
+                try
+                {
+                    outcome = search
+                        ? await AutoTuner.Search(s, auto, Progress, cts.Token)
+                        : await AutoTuner.StartAndVerify(s, auto, Progress, cts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    cancelled = true;
+                    if (!wasRunning) Installer.Stop();
+                }
+            }, cancellable: true);
+            searchCts = null;
+            cts.Dispose();
+            if (ok && !cancelled && outcome != null)
             {
                 ShowOutcome(outcome);
                 userStopped = !Installer.IsRunning();
@@ -323,13 +363,19 @@ namespace GoodbyeDPI.Panel
         // ---------- helpers ----------
 
         /// <summary>Runs work with three dots in the button and the controls locked.</summary>
-        async Task<bool> RunBusy(Button button, Func<Task> work)
+        async Task<bool> RunBusy(Button button, Func<Task> work, bool cancellable = false)
         {
             busy = true;
             tray.SetBusy(true);
             object content = button?.Content;
             if (button != null) button.Content = new LoadingDots(button.Foreground);
             SetControlsEnabled(false);
+            if (cancellable)
+            {
+                MainButton.Style = (Style)FindResource("TonalButton");
+                MainButton.Content = "İptal";
+                MainButton.IsEnabled = true;
+            }
             try
             {
                 await Task.Run(work);

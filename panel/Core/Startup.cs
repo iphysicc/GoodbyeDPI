@@ -58,18 +58,30 @@ namespace GoodbyeDPI.Panel.Core
 
         static int Schtasks(string args)
         {
-            using (var p = Process.Start(new ProcessStartInfo("schtasks.exe", args)
+            using (var p = new Process
             {
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            }))
+                StartInfo = new ProcessStartInfo("schtasks.exe", args)
+                {
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                }
+            })
             {
-                p.StandardOutput.ReadToEnd();
-                p.StandardError.ReadToEnd();
-                p.WaitForExit(15000);
-                return p.HasExited ? p.ExitCode : -1;
+                p.OutputDataReceived += (o, e) => { };
+                p.ErrorDataReceived += (o, e) => { };
+                p.Start();
+                p.BeginOutputReadLine();
+                p.BeginErrorReadLine();
+                if (!p.WaitForExit(15000))
+                {
+                    try { p.Kill(); } catch { }
+                    p.WaitForExit(2000);
+                    return -1;
+                }
+                p.WaitForExit();
+                return p.ExitCode;
             }
         }
     }

@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Runtime.InteropServices;
 using WinForms = System.Windows.Forms;
 
 namespace GoodbyeDPI.Panel
@@ -15,6 +16,7 @@ namespace GoodbyeDPI.Panel
 
         public event Action OpenRequested;
         public event Action ToggleRequested;
+        public event Action OpenLogRequested;
         public event Action ExitRequested;
 
         public TrayIcon()
@@ -32,9 +34,11 @@ namespace GoodbyeDPI.Panel
             open.Click += (s, e) => OpenRequested?.Invoke();
             toggleItem = new WinForms.ToolStripMenuItem("Başlat");
             toggleItem.Click += (s, e) => ToggleRequested?.Invoke();
+            var log = new WinForms.ToolStripMenuItem("Günlüğü aç");
+            log.Click += (s, e) => OpenLogRequested?.Invoke();
             var exit = new WinForms.ToolStripMenuItem("Çıkış");
             exit.Click += (s, e) => ExitRequested?.Invoke();
-            foreach (var item in new WinForms.ToolStripItem[] { open, toggleItem, new WinForms.ToolStripSeparator(), exit })
+            foreach (var item in new WinForms.ToolStripItem[] { open, toggleItem, log, new WinForms.ToolStripSeparator(), exit })
             {
                 item.ForeColor = DarkColors.Text;
                 item.Padding = new WinForms.Padding(4, 3, 16, 3);
@@ -125,9 +129,21 @@ namespace GoodbyeDPI.Panel
                         }
                     }
                 }
-                return Icon.FromHandle(bmp.GetHicon());
+                IntPtr hIcon = bmp.GetHicon();
+                try
+                {
+                    using (var raw = Icon.FromHandle(hIcon))
+                        return (Icon)raw.Clone();
+                }
+                finally
+                {
+                    DestroyIcon(hIcon);
+                }
             }
         }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool DestroyIcon(IntPtr hIcon);
 
         static Image LargestFrame()
         {
@@ -160,6 +176,8 @@ namespace GoodbyeDPI.Panel
         {
             icon.Visible = false;
             icon.Dispose();
+            onIcon.Dispose();
+            offIcon.Dispose();
         }
 
         /// <summary>The panel's warm dark tones for the menu.</summary>

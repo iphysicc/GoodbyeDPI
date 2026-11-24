@@ -76,12 +76,12 @@ void service_main(int argc __attribute__((unused)),
      * the executable, so the reason of a failure can be read afterwards.
      */
     {
-        char logpath[MAX_PATH];
-        DWORD n = GetModuleFileNameA(NULL, logpath, MAX_PATH);
-        char *slash = n ? strrchr(logpath, '\\') : NULL;
-        if (slash && (size_t)(slash - logpath) + sizeof("\\goodbyedpi.log") < MAX_PATH) {
-            strcpy(slash, "\\goodbyedpi.log");
-            freopen(logpath, "w", stdout);
+        wchar_t logpath[MAX_PATH];
+        DWORD n = GetModuleFileNameW(NULL, logpath, MAX_PATH);
+        wchar_t *slash = n ? wcsrchr(logpath, L'\\') : NULL;
+        if (slash && (size_t)(slash - logpath) + (sizeof(L"\\goodbyedpi.log") / sizeof(wchar_t)) < MAX_PATH) {
+            wcscpy(slash, L"\\goodbyedpi.log");
+            _wfreopen(logpath, L"w", stdout);
         }
     }
 

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace GoodbyeDPI.Panel.Core
@@ -43,11 +44,11 @@ namespace GoodbyeDPI.Panel.Core
             public int Score => Working.Count;
         }
 
-        public static async Task<Result> Run(int timeoutSeconds = 10)
+        public static async Task<Result> Run(int timeoutSeconds = 10, CancellationToken ct = default)
         {
             var r = new Result();
-            var checks = Sites.Select(s => CheckSite(s, timeoutSeconds)).ToArray();
-            var keep = MustKeepWorking.Select(s => CheckSite(s, timeoutSeconds)).ToArray();
+            var checks = Sites.Select(s => CheckSite(s, timeoutSeconds, ct)).ToArray();
+            var keep = MustKeepWorking.Select(s => CheckSite(s, timeoutSeconds, ct)).ToArray();
             foreach (var (site, problem, _) in await Task.WhenAll(checks))
             {
                 if (problem == null) r.Working.Add(site);
@@ -56,22 +57,24 @@ namespace GoodbyeDPI.Panel.Core
             // a slow site is not the method's fault; a reset is
             foreach (var (site, problem, timedOut) in await Task.WhenAll(keep))
                 if (problem != null && !timedOut) r.Broken.Add(site);
+            ct.ThrowIfCancellationRequested();
             return r;
         }
 
         /// <summary>True when an unblocked site opens, i.e. the internet itself works.</summary>
-        public static async Task<bool> InternetWorks()
+        public static async Task<bool> InternetWorks(CancellationToken ct = default)
         {
             for (int i = 0; i < 2; i++)
             {
-                var (_, problem, _) = await CheckSite(ControlSite, 8);
+                ct.ThrowIfCancellationRequested();
+                var (_, problem, _) = await CheckSite(ControlSite, 8, ct);
                 if (problem == null) return true;
-                await Task.Delay(1000);
+                await Task.Delay(1000, ct);
             }
             return false;
         }
 
-        static async Task<(string site, string problem, bool timedOut)> CheckSite(string site, int timeoutSeconds)
+        static async Task<(string site, string problem, bool timedOut)> CheckSite(string site, int timeoutSeconds, CancellationToken ct)
         {
             IPAddress[] system;
             try { system = await Dns.GetHostAddressesAsync(site); }
@@ -84,8 +87,12 @@ namespace GoodbyeDPI.Panel.Core
                 http.DefaultRequestHeaders.ConnectionClose = true;   // every check opens a fresh TLS handshake
                 try
                 {
-                    using (var resp = await http.GetAsync("https://" + site + "/", HttpCompletionOption.ResponseHeadersRead))
+                    using (var resp = await http.GetAsync("https://" + site + "/", HttpCompletionOption.ResponseHeadersRead, ct))
                         return (site, null, false);   // any HTTP answer with a valid certificate is the real site
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (TaskCanceledException)
                 {
@@ -101,27 +108,39 @@ namespace GoodbyeDPI.Panel.Core
         }
 
         /// <summary>
-        /// Compares the system answer with Cloudflare's DNS-over-HTTPS answer.
-        /// Big sites rotate addresses, so the same /16 network counts as a match.
+        /// Compares the system answer with a public DNS-over-HTTPS resolver (Cloudflare,
+        /// falling back to Google). Big sites rotate addresses, so the same /16 network
+        /// counts as a match.
         /// </summary>
         static async Task<bool> LooksPoisoned(string site, IPAddress[] system)
         {
-            try
+            var ipv4 = system.Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork).ToList();
+            if (ipv4.Count == 0) return false;   // IPv6-only answer can't be compared against A records
+
+            string[] endpoints =
             {
-                using (var http = new HttpClient { Timeout = TimeSpan.FromSeconds(6) })
+                $"https://1.1.1.1/dns-query?name={site}&type=A",
+                $"https://8.8.8.8/resolve?name={site}&type=A",
+            };
+            using (var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) })
+            {
+                http.DefaultRequestHeaders.Accept.ParseAdd("application/dns-json");
+                foreach (var url in endpoints)
                 {
-                    http.DefaultRequestHeaders.Accept.ParseAdd("application/dns-json");
-                    string json = await http.GetStringAsync($"https://1.1.1.1/dns-query?name={site}&type=A");
-                    var real = System.Text.RegularExpressions.Regex
-                        .Matches(json, "\"data\":\"(\\d+\\.\\d+\\.\\d+\\.\\d+)\"")
-                        .Cast<System.Text.RegularExpressions.Match>()
-                        .Select(m => IPAddress.Parse(m.Groups[1].Value)).ToList();
-                    if (real.Count == 0) return false;
-                    return !system.Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
-                                  .Any(a => real.Any(b => Same16(a, b)));
+                    try
+                    {
+                        string json = await http.GetStringAsync(url);
+                        var real = System.Text.RegularExpressions.Regex
+                            .Matches(json, "\"data\":\"(\\d+\\.\\d+\\.\\d+\\.\\d+)\"")
+                            .Cast<System.Text.RegularExpressions.Match>()
+                            .Select(m => IPAddress.Parse(m.Groups[1].Value)).ToList();
+                        if (real.Count == 0) continue;
+                        return !ipv4.Any(a => real.Any(b => Same16(a, b)));
+                    }
+                    catch { /* try next resolver */ }
                 }
             }
-            catch { return false; }
+            return false;
         }
 
         static bool Same16(IPAddress a, IPAddress b)

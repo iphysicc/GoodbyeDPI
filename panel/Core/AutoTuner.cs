@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace GoodbyeDPI.Panel.Core
@@ -38,34 +39,40 @@ namespace GoodbyeDPI.Panel.Core
             (a.Broken.Count > 0 && b.Broken.Count > 0 && a.Broken.Count < b.Broken.Count);
 
         /// <summary>Starts with the saved method and checks it; searches only if it fails.</summary>
-        public static async Task<Outcome> StartAndVerify(Settings s, bool autostart, Action<int, int> progress)
+        public static async Task<Outcome> StartAndVerify(Settings s, bool autostart, Action<int, int> progress, CancellationToken ct = default)
         {
+            string failedMode = null;
             if (!string.IsNullOrEmpty(s.Mode))
             {
+                ct.ThrowIfCancellationRequested();
                 bool active = await Task.Run(() => Installer.Restart(s, autostart));
                 if (active)
                 {
-                    var r = await Checker.Run(8);
+                    var r = await Checker.Run(8, ct);
                     if (IsGood(r)) return new Outcome { Mode = s.Mode, Last = r };
+                    failedMode = s.Mode;
                 }
             }
-            return await Search(s, autostart, progress);
+            return await Search(s, autostart, progress, ct, skipMode: failedMode);
         }
 
         /// <summary>Tries the methods; leaves the service running with the best one.</summary>
-        public static async Task<Outcome> Search(Settings s, bool autostart, Action<int, int> progress)
+        public static async Task<Outcome> Search(Settings s, bool autostart, Action<int, int> progress,
+            CancellationToken ct = default, string skipMode = null)
         {
-            if (!await Checker.InternetWorks())
+            if (!await Checker.InternetWorks(ct))
                 throw new InvalidOperationException("İnternet bağlantısı yok gibi görünüyor. Bağlantını kontrol edip tekrar dene.");
 
             var order = new List<string>();
-            if (Settings.IsKnownMode(s.Mode)) order.Add(s.Mode);
-            order.AddRange(Settings.Candidates.Where(c => c != s.Mode));
+            if (Settings.IsKnownMode(s.Mode) && s.Mode != skipMode) order.Add(s.Mode);
+            order.AddRange(Settings.Candidates.Where(c => c != s.Mode && c != skipMode));
+            if (order.Count == 0) order.AddRange(Settings.Candidates);
 
             string best = null, current = null;
             Checker.Result bestResult = null;
             for (int i = 0; i < order.Count; i++)
             {
+                ct.ThrowIfCancellationRequested();
                 current = order[i];
                 progress?.Invoke(i + 1, order.Count);
                 var trial = new Settings { Mode = order[i], Dns = s.Dns };
@@ -76,7 +83,7 @@ namespace GoodbyeDPI.Panel.Core
                     string why = await Task.Run(() => Installer.Diagnose(trial));
                     throw new InvalidOperationException("GoodbyeDPI başlatılamadı. " + (why ?? "Bilgisayarı yeniden başlatıp tekrar dene."));
                 }
-                var r = await Checker.Run(6);
+                var r = await Checker.Run(6, ct);
                 if (Better(r, bestResult))
                 {
                     best = order[i];

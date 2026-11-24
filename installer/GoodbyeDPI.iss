@@ -55,7 +55,7 @@ Name: "{autoprograms}\GoodbyeDPI"; Filename: "{app}\GoodbyeDPI-Panel.exe"
 Name: "{autodesktop}\GoodbyeDPI"; Filename: "{app}\GoodbyeDPI-Panel.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\GoodbyeDPI-Panel.exe"; Description: "GoodbyeDPI'yi aç"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\GoodbyeDPI-Panel.exe"; Description: "GoodbyeDPI'yi aç"; Flags: postinstall nowait skipifsilent runascurrentuser
 
 [UninstallRun]
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""GoodbyeDPI Panel"" /F"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteTask"
@@ -68,19 +68,78 @@ Filename: "{sys}\ipconfig.exe"; Parameters: "/flushdns"; Flags: runhidden waitun
 
 [UninstallDelete]
 Type: files; Name: "{app}\goodbyedpi.log"
+Type: filesandordirs; Name: "{app}\updates"
 Type: dirifempty; Name: "{app}"
 
 [Registry]
 Root: HKLM; Subkey: "SOFTWARE\GoodbyeDPI Panel"; Flags: uninsdeletekey dontcreatekey
 
 [Code]
+type
+  TServiceStatus = record
+    dwServiceType: DWORD;
+    dwCurrentState: DWORD;
+    dwControlsAccepted: DWORD;
+    dwWin32ExitCode: DWORD;
+    dwServiceSpecificExitCode: DWORD;
+    dwCheckPoint: DWORD;
+    dwWaitHint: DWORD;
+  end;
+
+function OpenSCManagerW(lpMachineName, lpDatabaseName: String; dwDesiredAccess: DWORD): THandle;
+  external 'OpenSCManagerW@advapi32.dll stdcall';
+function OpenServiceW(hSCManager: THandle; lpServiceName: String; dwDesiredAccess: DWORD): THandle;
+  external 'OpenServiceW@advapi32.dll stdcall';
+function QueryServiceStatus(hService: THandle; var lpServiceStatus: TServiceStatus): BOOL;
+  external 'QueryServiceStatus@advapi32.dll stdcall';
+function CloseServiceHandle(hSCObject: THandle): BOOL;
+  external 'CloseServiceHandle@advapi32.dll stdcall';
+
+var
+  ServiceWasRunning: Boolean;
+
+function IsGoodbyeDPIRunning: Boolean;
+var
+  Scm, Svc: THandle;
+  St: TServiceStatus;
+begin
+  Result := False;
+  Scm := OpenSCManagerW('', '', $0001); // SC_MANAGER_CONNECT
+  if Scm = 0 then Exit;
+  try
+    Svc := OpenServiceW(Scm, 'GoodbyeDPI', $0004); // SERVICE_QUERY_STATUS
+    if Svc <> 0 then
+    try
+      if QueryServiceStatus(Svc, St) then
+        Result := (St.dwCurrentState = 4) or (St.dwCurrentState = 2); // RUNNING or START_PENDING
+    finally
+      CloseServiceHandle(Svc);
+    end;
+  finally
+    CloseServiceHandle(Scm);
+  end;
+end;
+
 // An update replaces files that are in use: stop the engine and unload the driver first.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Code: Integer;
 begin
-  Exec(ExpandConstant('{sys}\sc.exe'), 'stop GoodbyeDPI', '', SW_HIDE, ewWaitUntilTerminated, Code);
-  Sleep(1500);
+  ServiceWasRunning := IsGoodbyeDPIRunning;
+  if ServiceWasRunning then
+  begin
+    Exec(ExpandConstant('{sys}\sc.exe'), 'stop GoodbyeDPI', '', SW_HIDE, ewWaitUntilTerminated, Code);
+    Sleep(1500);
+  end;
   Exec(ExpandConstant('{sys}\sc.exe'), 'stop WinDivert', '', SW_HIDE, ewWaitUntilTerminated, Code);
   Result := '';
+end;
+
+// If protection was on before an update, turn it back on once the new files are in place.
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Code: Integer;
+begin
+  if (CurStep = ssPostInstall) and ServiceWasRunning then
+    Exec(ExpandConstant('{sys}\sc.exe'), 'start GoodbyeDPI', '', SW_HIDE, ewWaitUntilTerminated, Code);
 end;
